@@ -1,0 +1,148 @@
+---
+title: "Practical Machine Learning - Prediction Assignment Writeup"
+author: "João Gilberto F. Ribeiro"
+---
+
+#Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, we will use data recorded from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+More information is available from the website http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. This report describes how the model for the project was built, its cross validation, expected out of sample error calculation, and the choices made.
+
+#Loading Data
+
+The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har
+
+We interpreting the miscellaneous NA, #DIV/0! and empty fields as NA
+
+```{r}
+trainSet <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+testSet <- read.csv("pml-testing.csv",  na.strings = c("NA", "#DIV/0!", ""))
+
+# show de train dataset
+str(trainSet, list.len=10)
+
+# show de classes
+table(trainSet$classe)
+
+# show user vs classe
+prop.table(table(trainSet$user_name, trainSet$classe), 1)
+```
+
+#Clean Data
+
+```{r}
+# remove the columns 1-6
+trainSet <- trainSet[, 7:160]
+testSet  <- testSet[, 7:160]
+
+# remove columns that contains NA
+hasData <- apply(!is.na(trainSet), 2, sum) > 19621
+trainSet <- trainSet[, hasData]
+testSet  <- testSet[, hasData]
+```
+
+#Create Model
+
+We split the training set into two for cross validation. We randomly subsample 60% of the set for training purposes and the 40% remainder will be used for test, evaluation and accuracy measurement.
+
+
+```{r}
+library(caret)
+
+set.seed(222)
+dataPartition <- createDataPartition(y = trainSet$classe, p = 0.60, list = FALSE)
+sixtyPercent <- trainSet[dataPartition, ]
+fortyPercent <- trainSet[-dataPartition, ]
+dim(sixtyPercent)
+dim(fortyPercent)
+```
+
+
+#Select top 10 variables
+
+Using the Random Forest algorithm we select the top 10 variables.
+
+```{r}
+library(randomForest)
+
+set.seed(222)
+finalModel <- randomForest(classe~., data=sixtyPercent, importance = TRUE, ntree = 100)
+varImpPlot(finalModel)
+```
+
+Using the Accuracy and Gini graphs above, we select the top 10 variables that we'll use for model building.
+Our 10 covariates are: yaw_belt, roll_belt, num_window, pitch_belt, magnet_dumbbell_y, magnet_dumbbell_z, pitch_forearm, accel_dumbbell_y, roll_arm, and roll_forearm.
+
+Now we calculates the correlation matrix, replaces the 1s in the diagonal with 0s, and outputs which variables have an absolute value correlation above 75%
+
+```{r}
+correlation = cor(sixtyPercent[ , c("yaw_belt","roll_belt","num_window","pitch_belt","magnet_dumbbell_z","magnet_dumbbell_y","pitch_forearm","accel_dumbbell_y","roll_arm","roll_forearm")])
+diag(correlation) <- 0
+which(abs(correlation) > 0.75, arr.ind = TRUE)
+```
+
+roll_belt and yaw_belt have a high correlation with each other. So we eliminated yaw_belt and re-running the correlation script we find that the maximum correlation is 50%.
+
+We can identify an interesting relationship between roll_belt and magnet_dumbbell_y
+
+```{r}
+qplot(roll_belt, magnet_dumbbell_y, colour = classe, data = sixtyPercent)
+
+library(rpart.plot)
+
+finalModel <- rpart(classe~., data = sixtyPercent, method = "class")
+prp(finalModel)
+```
+
+#Modeling
+
+We are using a 2-fold cross-validation control. This is the simplest k-fold cross-validation possible and it will give a reduced computation time. We used a small number of folds because the data set is too large.
+
+```{r}
+set.seed(222)
+finalModel <- train(classe~roll_belt+num_window+pitch_belt+magnet_dumbbell_y+magnet_dumbbell_z+pitch_forearm+accel_dumbbell_y+roll_arm+roll_forearm,
+                  data=sixtyPercent,
+                  method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  prox=TRUE,
+                  verbose=TRUE,
+                  allowParallel=TRUE)
+
+saveRDS(finalModel, "modelRF.Rds")
+```
+
+#Accurate
+
+We used caret's confusionMatrix function applied on fortyPercent to get an idea of the accuracy
+
+```{r}
+predictions <- predict(finalModel, newdata = fortyPercent)
+confusionMatrix <- confusionMatrix(predictions, fortyPercent$classe)
+confusionMatrix
+```
+
+#Out-of-Sample Error Rate
+
+```{r}
+missClass = function(values, predicted) {
+  sum(predicted != values) / length(values)
+}
+
+errorRate = missClass(fortyPercent$classe, predictions)
+errorRate
+```
+
+#Conclusion
+
+We have 99.77% of accurate and 0.29% of out of sample error rate.
+The 6 participants have a strong performance and this is obviously suspicious.
+We need apply the finalModel tree to a completely new set of participants, to complement and validate the analysis.
